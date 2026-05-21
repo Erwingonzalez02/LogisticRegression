@@ -1,0 +1,396 @@
+---
+title: "Case_Study_1_Bank_Marketing"
+date: "2025-09-09"
+output: html_document
+---
+
+```{r Load Libraries}
+library(caret)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(readxl)
+library(corrplot)
+library(car)
+library(MASS)
+library(pROC)
+```
+
+```{r Load Data}
+# Task: Improve campaign efficiency by identifying which customers are most likely to subscribe.Predict if the client will subscribe (yes/no) to a term deposit (y).
+# Classification problem - methodology: Logistic Regression/LDA/SVM/Random Forest
+
+bank <- read.csv("C:/Users/erwin/Desktop/Project/bank-additional-full.csv", header=TRUE, sep = ";")
+```
+
+```{r Data Exploration}
+str(bank)
+summary(bank)
+```
+There are 41,188 observations and 21 variables in this dataset.
+
+```{r Data Cleaning}
+bank <- bank %>%
+  mutate(across(where(is.character), as.factor)) # convert character variables into factor variables
+str(bank) # check variable type conversion
+
+# removing blanks/nan in the dataset;  there are zero missing
+colSums(is.na(bank))
+colSums(bank == "", na.rm = TRUE)
+
+#count how many "unknowns" in data
+colSums(bank == "unknown", na.rm = TRUE)
+
+# "unknown" variables are job, marital,education,default, housing, loan
+
+#count pdays that is equal to 999
+colSums(bank == "999", na.rm = TRUE)
+table(bank$pdays)
+
+bank_clean <- bank
+bank_clean <- na.omit(bank_clean)
+bank_clean <- subset(bank_clean, select = -duration) # remove duration since it is perfectly separated
+
+hist(bank$pdays[bank$pdays != 999]) # figure out cutoff
+table(bank$pdays)
+#convert pdays to categorical into 6 levels: 0, 1-5, 6-10, 11-15, 16-27, and never contacted 
+
+#bank_clean$pdays <- ifelse(bank$pdays == 999, 0, ifelse(bank$pdays < 5, 1, 2))
+
+bank_clean$pdays <- cut(bank$pdays,
+  breaks = c(-1, 0, 5, 10, 15, 27, 999), 
+  labels = c("0", "1-5", "6-10", "11-15", "16-27", "Never Contacted"))
+table(bank_clean$pdays)
+
+# do not use duration in model because it is perfectly separated
+```
+
+
+```{r Data Cleaning}
+
+table(bank$campaign) # break into multiple levels
+bank_clean$campaign<- cut(bank_clean$campaign, breaks = c(0, 1, 2, 3, 4, 5, 6, 8, 10, 12, Inf),labels = c("1", "2", "3", "4", "5", "6", "7-8", "9-10", "11-12", "13+"),include.lowest = TRUE)
+table(bank_clean$campaign)
+table(bank$age)
+table(bank$contact)
+table(bank$month)
+table(bank$day_of_week)
+table(bank$previous)
+table(bank$poutcome)
+table(bank$emp.var.rate)
+table(bank$cons.price.idx)
+table(bank$cons.conf.idx)
+table(bank$euribor3m)
+table(bank$nr.employed)
+
+# tables for each variable with unknowns
+table(bank$job)
+table(bank$marital)
+table(bank$education)
+table(bank$default)
+table(bank$housing)
+table(bank$loan)
+table(bank$pdays) # break into multiple levels
+table(bank$y) # imbalance dataset; need to adjust optimal probability when modeling; there are 36548 no responses and 4640 yes responses
+```
+
+```{r Data Visualizations}
+
+#bar charts (categorical)
+ggplot(bank_clean, aes(x = job, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Job", y = "Proportion")
+
+ggplot(bank_clean, aes(x = marital, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Marital", y = "Proportion")
+
+ggplot(bank_clean, aes(x = education, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Education Level", y = "Proportion")
+
+ggplot(bank_clean, aes(x = default, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Default", y = "Proportion")
+
+ggplot(bank_clean, aes(x = housing, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Housing Loan", y = "Proportion")
+
+#drop 'housing' variable since similar proportion responses between the categories
+
+ggplot(bank_clean, aes(x = loan, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Personal Loan", y = "Proportion")
+
+#drop 'loan' variable since similar proportion responses between the categories
+
+ggplot(bank_clean, aes(x = contact, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Communication Type", y = "Proportion")
+
+ggplot(bank_clean, aes(x = month, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Month", y = "Proportion")
+
+ggplot(bank_clean, aes(x = day_of_week, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Day of Week", y = "Proportion")
+
+#Potentially get drop day of week since there does not show great distinction of response difference on what day of week person was contacted
+
+ggplot(bank_clean, aes(x = campaign, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Outcome of Previous Marketing Campaign", y = "Proportion")
+
+ggplot(bank_clean, aes(x = pdays, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Days Last Contacted", y = "Proportion")
+
+ggplot(bank_clean, aes(x = poutcome, fill = y)) +
+  geom_bar(position = "fill") +
+  labs(title = "Proportion of Response by Outcome of Previous Marketing Campaign", y = "Proportion")
+
+
+# Ultimately, treat the unknown or nonexistent category as its own category since it shows some relationship in the 'marital', 'education', 'default', 'poutcome', 'job'  variables
+
+# keep variables:job, marital, education, default, contact, month, campaign pdays, poutcome
+#drop variables: housing, loan, day_of_week, default( no yes responses for those who default)
+
+#boxplots (numeric)
+ggplot(bank_clean, aes(x = y, y = age, fill = y)) +
+  geom_boxplot() +
+  labs(title = "Age Distribution by Response", x = "Response", y = "Age")
+
+#ggplot(bank, aes(x = y, y = campaign, fill = y)) +
+ # geom_boxplot() +
+#  labs(title = "Campaign Distribution by Response", x = "Response", y = #"Campaign")
+
+#hist(bank$campaign) # decided to break into levels for campaign
+
+ggplot(bank, aes(x = y, y = previous, fill = y)) +
+  geom_boxplot()+
+  labs(title = "Previous Contact before Campaign Distribution by Response", x = "Response", y = "Previous Contact before Campaign")
+ggplot(bank, aes(x = y, y = emp.var.rate, fill = y)) +
+  geom_boxplot() +
+  labs(title = "Employment Variation Rate Distribution by Response", x = "Response", y = "Employment Variation Rate")
+
+ggplot(bank, aes(x = y, y = cons.price.idx, fill = y)) +
+  geom_boxplot() +
+  labs(title = "Consumer Price Index Distribution by Response", x = "Response", y = "Consumer Price Index")
+
+ggplot(bank, aes(x = y, y = cons.conf.idx, fill = y)) +
+  geom_boxplot()+
+  labs(title = "Consumer Confidence Index Distribution by Response", x = "Response", y = "Consumer Confidence Index")
+
+ggplot(bank, aes(x = y, y = euribor3m, fill = y)) +
+  geom_boxplot() +
+  labs(title = "Euribor 3 Month Rate by Response", x = "Response", y = "Euribor 3 month Rate")
+
+ggplot(bank, aes(x = y, y = nr.employed, fill = y)) +
+  geom_boxplot()+
+  labs(title = "Number of Employees Distribution by Response", x = "Response", y = "Number of Employees")
+
+
+# keep variables: age, previous, em.var.rate, cons.price.idx, cons.conf.idx, euribor3m, nr.employed
+```
+
+```{r Data Visualization}
+# Create a correlation matrix
+bank_cor_num <- dplyr::select_if(bank_clean, is.numeric) 
+Bcorr <- cor(bank_cor_num, use ="complete.obs")
+corrplot(Bcorr, method = "number")
+
+#high correlation between euribor3m & nr.employed (.95), euribor3m & emp.var.rate (.97),emp.var.rate & nr.emplyed (.91)
+
+high_corr <- findCorrelation(Bcorr, cutoff = 0.8)
+
+colnames(Bcorr)[high_corr]   # names of correlated vars
+ 
+# high correlation are euribor3m and emp.var.rate and dropping these variables
+
+fit <- glm(y ~ ., data = cbind(y = bank_clean$y, bank_cor_num), family = "binomial")
+
+vif(fit)
+
+# consider removing variables with vif > 5
+
+bank_reduced <- dplyr::select(bank_clean, -emp.var.rate, -euribor3m)
+
+#removed emp.var.rate and euribor3m variables
+
+bank_cor_num2 <- dplyr::select_if(bank_reduced, is.numeric)
+
+fit2 <- glm(y ~ ., data =  cbind(y = bank_reduced$y, bank_cor_num2), family = "binomial")
+
+vif(fit2)
+```
+
+```{r Reduce Dataset and Data Splitting: Imbalanced Dataset}
+bank_clean2 <- subset(bank_clean, select = -c(emp.var.rate, euribor3m, housing, loan, day_of_week, default)) #drop variables that do not show significance to start modeling
+
+# 80/20 split training and testing on imbalanced dataset
+set.seed(1)
+row.number <- sample(1:nrow(bank_clean2), 0.8*nrow(bank_clean2))
+banktrain = bank_clean2[row.number,]
+banktest = bank_clean2[-row.number,]
+```
+
+```{r Feature Selection (Training Only; Imbalanced Dataset)}
+#Potentially need to balance the data first before modeling
+bank.step.model = step(glm(y ~ . , data = banktrain, family = binomial), direction = "backward")
+vif(bank.step.model)
+summary(bank.step.model)
+# Feature Selection: job, default, contact, month, campaign,pdays, poutcome, cons.conf.idx, nr.employed
+```
+```{r Data Modeling/Selection 1: Logistic Regression; Imbalanced Data}
+bank_log <- glm(formula = y ~ job + contact + month + campaign + 
+    pdays + poutcome + cons.conf.idx + nr.employed, family = binomial, 
+    data = banktrain)
+
+summary(bank_log)
+```
+
+```{r Model Predictions - Imbalanced Data}
+predprob_log <- predict.glm(bank_log, banktest, type = "response")
+predclass_log = ifelse(predprob_log >= 0.5, "yes", "no")
+```
+
+
+```{r Confusion Matrix - Imbalanced Data}
+caret::confusionMatrix(as.factor(predclass_log), banktest$y, positive = "yes")
+```
+
+```{r Logistic ROC anf AUC Curve - Imbalanced Data }
+# ROC and AUC
+roc_log <- roc(banktest$y, predprob_log, levels = c("no","yes"))
+plot(roc_log, main = paste("Logistic Regression ROC Imbalanced (AUC =", round(auc(roc_log), 3), ")"))
+```
+
+```{r Data Modeling/Selection 2: LDA; Imbalanced Data}
+bank_lda <- lda(as.factor(y) ~ job + contact + month + campaign +
+    pdays + poutcome + cons.conf.idx + nr.employed,
+  data = banktrain)
+```
+
+
+```{r Model Predictions - Imbalanced Data} 
+#Not good because high tendency to have bias toward majority class
+predictions.lda <- predict(bank_lda,banktest)
+```
+
+
+```{r LDA Confusion Matrix - Imbalanced Data} 
+caret::confusionMatrix(as.factor(predictions.lda$class), as.factor(banktest$y))
+```
+
+```{r LDA ROC anf AUC Curve - Imbalanced Data }
+# ROC and AUC
+probs_lda <- predictions.lda$posterior[, "yes"]
+roc_lda <- roc(banktest$y, probs_lda, levels = c("no","yes"))
+
+plot(roc_lda, main = paste("LDA ROC Imbalanced (AUC =", round(auc(roc_lda), 3), ")"))
+```
+
+```{r Balance Dataset}
+bank_yes = bank_clean2 %>% filter(y == "yes") # minority class
+bank_no = bank_clean2 %>% filter(y == "no") #majority class
+
+set.seed(123)
+sample_bank_no = sample_n(bank_no, nrow(bank_yes)) # randomly sample the majority class (no)  to match the same number of rows as the minority class(yes)
+
+bank_bal = rbind(bank_yes,sample_bank_no)
+table(bank_bal$y)
+```
+```{r Data Splitting: Balanced Dataset}
+#Split Data 80/20  on balanced dataset
+
+set.seed(123)
+tr_ind_bal <- sample(nrow(bank_bal),0.8*nrow(bank_bal),replace = F) # Setting training sample to be 80% of the data
+banktrain_bal <- bank_bal[tr_ind_bal,]
+banktest_bal <- bank_bal[-tr_ind_bal,]
+
+```
+
+
+```{r Data Modeling/Selection 1: Logistic Regression}
+bank_log_bal <- glm(formula = y ~ job + contact + month + campaign + 
+    pdays + poutcome + cons.conf.idx + nr.employed, family = binomial, 
+    data = banktrain_bal)
+
+summary(bank_log_bal)
+```
+
+Assumptions:
+Limitations:
+
+```{r Model Predictions 1}
+predprob_log2 <- predict.glm(bank_log_bal, banktest_bal, type = "response")
+predclass_log2 = ifelse(predprob_log2 >= 0.5, "yes", "no")
+
+```
+
+```{r Confusion Matrix 1}
+caret::confusionMatrix(as.factor(predclass_log2), banktest_bal$y, positive = "yes")
+
+```
+```{r Logistic AUC & ROC - Balanced Dataset}
+roc_log2 <- roc(banktest_bal$y, predprob_log2, levels = c("no","yes"))
+plot(roc_log2, main = paste("Logistic Regression ROC Balanced (AUC =", round(auc(roc_log2), 3), ")"))
+
+```
+
+
+
+```{r Data Modeling/Selection 2: Linear Discriminant Analysis}
+bank_lda_bal <- lda(as.factor(y) ~ job + contact + month + campaign +
+    pdays + poutcome + cons.conf.idx + nr.employed,
+  data = banktrain_bal)
+
+```
+
+Assumptions:
+Limitations:
+
+```{r Model Predictions 2}
+predictions.lda2 <- predict(bank_lda_bal,banktest_bal)
+
+```
+
+```{r Confusion Matrix 2}
+#Choose this model since higher accuracy and higher sensitivity since goal is to market to people who will say yes
+caret::confusionMatrix(as.factor(predictions.lda2$class), as.factor(banktest_bal$y))
+```
+
+```{r LDA AUC & ROC - Balanced Dataset}
+probs_lda2 <- predictions.lda2$posterior[, "yes"]
+
+roc_lda2 <- roc(banktest_bal$y, probs_lda2, levels = c("no","yes"))
+plot(roc_lda2, main = paste("LDA ROC Balanced (AUC =", round(auc(roc_lda2), 3), ")"))
+```
+```{r}
+
+baseline_rate <- mean(banktest$y == "yes")
+
+
+top_fraction <- 0.20
+n_target <- floor(nrow(banktest) * top_fraction)
+
+banktest$predprob_log <- predprob_log
+
+targeted <- banktest %>%
+  arrange(desc(predprob_log)) %>%
+  slice(1:n_target)
+
+model_rate <- mean(targeted$y == "yes")
+
+
+lift <- (model_rate - baseline_rate) / baseline_rate * 100
+
+cat("Baseline conversion rate (random targeting):", round(baseline_rate, 4), "\n")
+cat("Model targeting conversion rate (top 20%):", round(model_rate, 4), "\n")
+cat("Expected lift over random targeting:", round(lift, 2), "%\n")
+
+```
+
